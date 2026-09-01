@@ -81,6 +81,106 @@ func TestMessageLengthStatusUsesSelectedProviderLimit(t *testing.T) {
 	}
 }
 
+func TestLargePasteKeepsFooterVisible(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.width, model.height = 80, 12
+	model.composer = strings.Repeat("long pasted text ", 100)
+	view := model.View().Content
+	if !strings.Contains(view, "[esc]") {
+		t.Fatalf("footer hints were clipped from view: %q", view)
+	}
+	if !strings.Contains(view, "...") {
+		t.Fatal("large composer was not visibly clipped")
+	}
+	if got := model.composer; got == "" || !strings.HasPrefix(got, "long pasted text") {
+		t.Fatal("full composer draft was not retained")
+	}
+}
+
+func TestComposerSupportsCursorMovementAndMiddleInsertion(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.composer = "hello world"
+	model.composerCursor = len([]rune(model.composer))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModCtrl})
+	model = updated.(Model)
+	if model.composerCursor != 6 {
+		t.Fatalf("Ctrl+Left cursor = %d, want 6", model.composerCursor)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Text: "X", Code: 'X'})
+	model = updated.(Model)
+	if model.composer != "hello Xworld" || model.composerCursor != 7 {
+		t.Fatalf("middle insertion = %q, cursor %d", model.composer, model.composerCursor)
+	}
+}
+
+func TestComposerWordDeletionIsRuneSafe(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.composer = "hello 世界"
+	model.composerCursor = len([]rune(model.composer))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModCtrl})
+	model = updated.(Model)
+	if model.composer != "hello " || model.composerCursor != 6 {
+		t.Fatalf("Ctrl+Backspace = %q, cursor %d", model.composer, model.composerCursor)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyDelete, Mod: tea.ModCtrl})
+	model = updated.(Model)
+	if model.composer != "hello " || model.composerCursor != 6 {
+		t.Fatalf("Ctrl+Delete at end changed composer = %q, cursor %d", model.composer, model.composerCursor)
+	}
+}
+
+func TestComposerDoesNotInsertSpecialKeyNames(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []rune{tea.KeyTab, tea.KeyDelete} {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: code})
+		model = updated.(Model)
+	}
+	if model.composer != "" {
+		t.Fatalf("special keys became composer text: %q", model.composer)
+	}
+}
+
+func TestComposerViewExposesCursor(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.composer = "hello"
+	model.composerCursor = 2
+	model.width, model.height = 80, 24
+	if view := model.View(); view.Cursor == nil {
+		t.Fatal("composer cursor was not exposed in the view")
+	}
+}
+
+func TestComposerIsRenderedOnceButCopyKeepsFullDraft(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.width, model.height = 80, 24
+	model.composer = strings.Repeat("filler ", 20) + "unique-marker"
+	view := model.View().Content
+	if got := strings.Count(view, "unique-marker"); got != 1 {
+		t.Fatalf("composer rendered %d times, want once", got)
+	}
+	if got := model.commandPreview(); got != model.composer {
+		t.Fatal("copy preview no longer contains the full draft")
+	}
+}
+
 type testAppAdapter struct {
 	id        chat.ConnectionID
 	platform  chat.Platform

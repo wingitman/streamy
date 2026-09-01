@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -52,6 +53,7 @@ type Model struct {
 	adapters          []chat.Adapter
 	histories         map[chat.ConnectionID]*chat.History
 	composer          string
+	composerCursor    int
 	filterMode        bool
 	filter            string
 	statuses          map[chat.ConnectionID]chat.ConnectionStatus
@@ -259,13 +261,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("%s reconnect failed: %s", msg.id, msg.err)
 		}
 	case tea.KeyPressMsg:
-		return m.key(msg.String())
+		return m.keyPress(msg)
 	case tea.PasteMsg:
 		if m.current == modeIntegrationSetup && m.setupEditing {
 			m.pasteSetupValue(msg.Content)
 			m.reflow()
 		} else if m.current == modeNormal && !m.filterMode {
-			m.composer += strings.NewReplacer("\r", "", "\n", " ").Replace(msg.Content)
+			m.insertComposer(strings.NewReplacer("\r", "", "\n", " ").Replace(msg.Content))
 			m.reflow()
 		}
 	case tea.MouseClickMsg:
@@ -279,6 +281,138 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.reflow()
 	}
 	return m, nil
+}
+
+func (m Model) keyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.Keystroke()
+	if m.current == modeNormal && !m.filterMode {
+		if m.isConfiguredKey(key) {
+			return m.key(key)
+		}
+		if m.editComposer(msg) {
+			m.reflow()
+			return m, nil
+		}
+		if text := msg.Key().Text; text != "" {
+			m.insertComposer(text)
+			m.reflow()
+			return m, nil
+		}
+		m.reflow()
+		return m, nil
+	}
+	if m.filterMode && msg.Key().Text == "" && key != m.cfg.Keybinds.Back && key != m.cfg.Keybinds.Confirm {
+		m.reflow()
+		return m, nil
+	}
+	return m.key(key)
+}
+
+func (m Model) isConfiguredKey(key string) bool {
+	for _, configured := range []string{
+		m.cfg.Keybinds.Up, m.cfg.Keybinds.Down, m.cfg.Keybinds.Left, m.cfg.Keybinds.Right,
+		m.cfg.Keybinds.Back, m.cfg.Keybinds.PageUp, m.cfg.Keybinds.PageDown,
+		m.cfg.Keybinds.First, m.cfg.Keybinds.Last,
+		m.cfg.Keybinds.Quit, m.cfg.Keybinds.Help, m.cfg.Keybinds.OpenConfig, m.cfg.Keybinds.Theme,
+		m.cfg.Keybinds.Copy, m.cfg.Keybinds.Filter, m.cfg.Keybinds.NextTarget, m.cfg.Keybinds.Retry,
+		m.cfg.Keybinds.Reconnect, m.cfg.Keybinds.ViewCombined, m.cfg.Keybinds.ViewTwitch,
+		m.cfg.Keybinds.ViewYouTube, m.cfg.Keybinds.History, m.cfg.Keybinds.Update, m.cfg.Keybinds.Rollback,
+		m.cfg.Keybinds.Confirm, m.cfg.Keybinds.ProviderConsole, m.cfg.Keybinds.SaveIntegration,
+		m.cfg.Keybinds.ToggleEnabled,
+	} {
+		if matches(key, configured) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) editComposer(msg tea.KeyPressMsg) bool {
+	key := msg.Key()
+	m.clampComposerCursor()
+	ctrl := key.Mod&tea.ModCtrl != 0
+	switch key.Code {
+	case tea.KeyLeft:
+		if ctrl {
+			m.composerCursor = previousWordBoundary([]rune(m.composer), m.composerCursor)
+		} else if m.composerCursor > 0 {
+			m.composerCursor--
+		}
+		return true
+	case tea.KeyRight:
+		if ctrl {
+			m.composerCursor = nextWordBoundary([]rune(m.composer), m.composerCursor)
+		} else if m.composerCursor < len([]rune(m.composer)) {
+			m.composerCursor++
+		}
+		return true
+	case tea.KeyHome:
+		m.composerCursor = 0
+		return true
+	case tea.KeyEnd:
+		m.composerCursor = len([]rune(m.composer))
+		return true
+	case tea.KeyBackspace:
+		if ctrl {
+			m.deleteComposerRange(previousWordBoundary([]rune(m.composer), m.composerCursor), m.composerCursor)
+		} else if m.composerCursor > 0 {
+			m.deleteComposerRange(m.composerCursor-1, m.composerCursor)
+		}
+		return true
+	case tea.KeyDelete:
+		if ctrl {
+			m.deleteComposerRange(m.composerCursor, nextWordBoundary([]rune(m.composer), m.composerCursor))
+		} else if m.composerCursor < len([]rune(m.composer)) {
+			m.deleteComposerRange(m.composerCursor, m.composerCursor+1)
+		}
+		return true
+	case tea.KeyTab:
+		return true
+	}
+	return false
+}
+
+func (m *Model) clampComposerCursor() {
+	m.composerCursor = clamp(m.composerCursor, 0, len([]rune(m.composer)))
+}
+
+func (m *Model) insertComposer(text string) {
+	runes := []rune(m.composer)
+	m.clampComposerCursor()
+	insert := []rune(text)
+	runes = append(runes[:m.composerCursor], append(insert, runes[m.composerCursor:]...)...)
+	m.composer = string(runes)
+	m.composerCursor += len(insert)
+}
+
+func (m *Model) deleteComposerRange(start, end int) {
+	runes := []rune(m.composer)
+	start, end = clamp(start, 0, len(runes)), clamp(end, 0, len(runes))
+	if start > end {
+		start, end = end, start
+	}
+	m.composer = string(append(runes[:start], runes[end:]...))
+	m.composerCursor = start
+}
+
+func previousWordBoundary(runes []rune, cursor int) int {
+	for cursor > 0 && unicode.IsSpace(runes[cursor-1]) {
+		cursor--
+	}
+	for cursor > 0 && !unicode.IsSpace(runes[cursor-1]) {
+		cursor--
+	}
+	return cursor
+}
+
+func nextWordBoundary(runes []rune, cursor int) int {
+	for cursor < len(runes) && unicode.IsSpace(runes[cursor]) {
+		cursor++
+	}
+	for cursor < len(runes) && !unicode.IsSpace(runes[cursor]) {
+		cursor++
+	}
+	return cursor
 }
 
 func waitEvent(adapter chat.Adapter) tea.Cmd {
@@ -489,8 +623,9 @@ func (m Model) key(key string) (tea.Model, tea.Cmd) {
 		m.cursor = len(m.items) - 1
 		m.ensureVisible()
 	case key == "backspace":
-		if len(m.composer) > 0 {
-			m.composer = m.composer[:len(m.composer)-1]
+		m.clampComposerCursor()
+		if m.composerCursor > 0 {
+			m.deleteComposerRange(m.composerCursor-1, m.composerCursor)
 		}
 	case matches(key, m.cfg.Keybinds.Confirm):
 		m.channels.SetComposer(m.composer)
@@ -502,8 +637,8 @@ func (m Model) key(key string) (tea.Model, tea.Cmd) {
 			return m, m.sendCommands(commands)
 		}
 	default:
-		if key != "" && !strings.Contains(key, "+") {
-			m.composer += key
+		if key != "" && !strings.Contains(key, "+") && !isSpecialKeyName(key) {
+			m.insertComposer(key)
 		}
 	}
 	m.reflow()
@@ -857,20 +992,7 @@ func (m *Model) ensureVisible() {
 	m.scroll = clamp(m.scroll, 0, max(0, len(m.items)-rows))
 }
 func (m Model) visibleRows() int {
-	footerRows := 1 + 1 + len(ui.Wrap("> "+m.composer, max(1, m.width))) + len(ui.Wrap(m.commandPreview(), max(1, m.width))) + 1
-	if m.messageLengthStatus() != "" {
-		footerRows++
-	}
-	if m.connectionStatus() != "" {
-		footerRows++
-	}
-	if m.filterMode || m.filter != "" {
-		footerRows++
-	}
-	if m.cfg.UI.ShowHints {
-		footerRows++
-	}
-	return max(1, m.height-2-footerRows)
+	return max(1, m.height-2-len(m.footerLines()))
 }
 func (m *Model) reflow() {
 	m.items = m.messageLines()
@@ -1003,35 +1125,121 @@ func (m Model) View() tea.View {
 		}
 		lines = append(lines, prefix+m.items[index])
 	}
-	target := "*"
-	if m.channels != nil {
-		target = string(m.channels.SelectedTarget())
+	for len(lines) < 2+m.visibleRows() {
+		lines = append(lines, "")
 	}
-	status := fmt.Sprintf("target: %s", target)
+	lines = append(lines, m.footerLines()...)
+	view := m.newView(ui.JoinLines(lines, m.width, m.height))
+	if cursor := m.composerCursorPosition(); cursor != nil {
+		view.Cursor = cursor
+	}
+	return view
+}
+
+func isSpecialKeyName(key string) bool {
+	switch key {
+	case "backspace", "delete", "tab", "left", "right", "up", "down", "home", "end", "pgup", "pgdown", "enter", "esc":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m Model) composerCursorPosition() *tea.Cursor {
+	if m.width < 1 || m.height < 1 || m.current != modeNormal || m.channels == nil {
+		return nil
+	}
+	width := max(1, m.width)
+	input := ui.Wrap("> "+m.composer, width)
+	if len(input) == 0 {
+		input = []string{"> "}
+	}
+	footerStart := 2 + m.visibleRows()
+	variableRows := max(0, m.height-3-2-len(m.footerSuffixLines()))
+	inputRows := min(len(input), variableRows)
+	if inputRows == 0 {
+		return nil
+	}
+	fullCursorLines := ui.Wrap("> "+string([]rune(m.composer)[:clamp(m.composerCursor, 0, len([]rune(m.composer)))]), width)
+	if len(fullCursorLines) == 0 {
+		fullCursorLines = []string{""}
+	}
+	lineIndex := len(fullCursorLines) - 1
+	firstVisible := len(input) - inputRows
+	if lineIndex < firstVisible {
+		lineIndex = len(input) - 1
+		return tea.NewCursor(lipgloss.Width(input[lineIndex]), footerStart+2+inputRows-1)
+	}
+	lineIndex -= firstVisible
+	return tea.NewCursor(lipgloss.Width(fullCursorLines[len(fullCursorLines)-1]), footerStart+2+lineIndex)
+}
+
+// footerLines keeps the controls anchored to the bottom by bounding the
+// variable-height composer area before the message viewport is calculated.
+func (m Model) footerLines() []string {
+	width := max(1, m.width)
+	prefix := []string{"", m.styles.PreviewTitle.Render("Message")}
+	input := ui.Wrap("> "+m.composer, width)
+	suffix := m.footerSuffixLines()
+
+	// Keep one row available for the message viewport; this also prevents the
+	// footer's minimum height from overflowing very small terminals.
+	budget := max(0, m.height-3)
+	variableRows := max(0, budget-len(prefix)-len(suffix))
+	inputRows := min(len(input), variableRows)
+	lines := append([]string(nil), prefix...)
+	lines = append(lines, tailLines(input, inputRows, true)...)
+	lines = append(lines, suffix...)
+	if len(lines) > budget {
+		lines = tailLines(lines, budget, false)
+	}
+	return lines
+}
+
+func (m Model) footerSuffixLines() []string {
+	suffix := []string{m.styles.StatusBar.Render(fmt.Sprintf("target: %s", m.selectedTarget()))}
 	if m.status != "" {
-		status += " | " + m.status
+		suffix[0] += " | " + m.status
 	}
-	lines = append(lines, "", m.styles.PreviewTitle.Render("Message"))
-	for _, line := range ui.Wrap("> "+m.composer, max(1, m.width)) {
-		lines = append(lines, m.styles.InputPrompt.Render(line))
-	}
-	for _, line := range ui.Wrap(m.commandPreview(), max(1, m.width)) {
-		lines = append(lines, line)
-	}
-	lines = append(lines, m.styles.StatusBar.Render(status))
 	if lengthStatus := m.messageLengthStatus(); lengthStatus != "" {
-		lines = append(lines, m.styles.StatusBar.Render(lengthStatus))
+		suffix = append(suffix, m.styles.StatusBar.Render(lengthStatus))
 	}
 	if connectionStatus := m.connectionStatus(); connectionStatus != "" {
-		lines = append(lines, m.styles.StatusBar.Render(connectionStatus))
+		suffix = append(suffix, m.styles.StatusBar.Render(connectionStatus))
 	}
 	if m.filterMode || m.filter != "" {
-		lines = append(lines, m.styles.StatusBar.Render("filter: "+m.filter))
+		suffix = append(suffix, m.styles.StatusBar.Render("filter: "+m.filter))
 	}
 	if m.cfg.UI.ShowHints {
-		lines = append(lines, m.hints())
+		suffix = append(suffix, m.hints())
 	}
-	return m.newView(ui.JoinLines(lines, m.width, m.height))
+	return suffix
+}
+
+func (m Model) selectedTarget() chat.ConnectionID {
+	if m.channels == nil {
+		return channels.AllTargets
+	}
+	return m.channels.SelectedTarget()
+}
+
+func tailLines(lines []string, limit int, styled bool) []string {
+	if limit <= 0 {
+		return nil
+	}
+	if len(lines) <= limit {
+		return lines
+	}
+	result := make([]string, 0, limit)
+	marker := "..."
+	if styled {
+		marker = "> ..."
+	}
+	result = append(result, marker)
+	if limit > 1 {
+		result = append(result, lines[len(lines)-limit+1:]...)
+	}
+	return result
 }
 
 func (m Model) messageLengthStatus() string {
