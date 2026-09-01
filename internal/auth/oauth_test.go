@@ -49,3 +49,25 @@ func TestOAuthExchangeReturnsCredential(t *testing.T) {
 		t.Fatalf("credential = %#v", credential)
 	}
 }
+
+func TestRefreshPreservesRefreshTokenWhenProviderOmitsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.FormValue("grant_type") != "refresh_token" {
+			t.Errorf("refresh request = %s %s", request.Method, request.URL)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"access_token":"new-access","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer server.Close()
+	flow := &OAuthFlow{
+		Client: http.DefaultClient, ClientID: "client", ClientSecret: "secret",
+		CallbackURL: OAuthRedirectURL, Endpoints: OAuthEndpoints{TokenURL: server.URL},
+	}
+	credential, err := flow.Refresh(context.Background(), Credential{RefreshToken: "refresh"})
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if credential.AccessToken != "new-access" || credential.RefreshToken != "refresh" {
+		t.Fatalf("refreshed credential = %#v", credential)
+	}
+}

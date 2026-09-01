@@ -1,7 +1,6 @@
 package youtube
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,16 +27,18 @@ type Config struct {
 }
 
 type Adapter struct {
-	config  Config
-	client  *http.Client
-	mu      sync.RWMutex
-	status  chat.ConnectionStatus
-	cancel  context.CancelFunc
-	done    chan struct{}
-	events  chan chat.Event
-	seenMu  sync.Mutex
-	seen    map[string]struct{}
-	seenIDs []string
+	config   Config
+	client   *http.Client
+	mu       sync.RWMutex
+	status   chat.ConnectionStatus
+	cancel   context.CancelFunc
+	done     chan struct{}
+	events   chan chat.Event
+	seenMu   sync.Mutex
+	seen     map[string]struct{}
+	seenIDs  []string
+	cursorMu sync.Mutex
+	cursor   string
 }
 
 func New(config Config) (*Adapter, error) {
@@ -60,7 +61,7 @@ func New(config Config) (*Adapter, error) {
 func (a *Adapter) ConnectionID() chat.ConnectionID { return a.config.ConnectionID }
 func (a *Adapter) Platform() chat.Platform         { return chat.PlatformYouTube }
 func (a *Adapter) Capabilities() chat.Capabilities {
-	return chat.Capabilities{ReceiveChat: true, SendChat: true, PaidMessages: true, MembershipMessages: true, MessageUpdates: true, CursorResume: true}
+	return chat.Capabilities{ReceiveChat: true, SendChat: true, PaidMessages: true, MembershipMessages: true, MessageUpdates: true, CursorResume: true, MaxMessageLength: 200}
 }
 func (a *Adapter) Status() chat.ConnectionStatus { a.mu.RLock(); defer a.mu.RUnlock(); return a.status }
 func (a *Adapter) Events() <-chan chat.Event     { return a.events }
@@ -102,6 +103,10 @@ func (a *Adapter) Send(ctx context.Context, request chat.SendRequest) chat.SendR
 	result := chat.SendResult{LocalID: request.LocalID, ConnectionID: a.ConnectionID(), Platform: a.Platform()}
 	if strings.TrimSpace(request.Text) == "" {
 		result.Status, result.ProviderError = chat.DeliveryFailed, "message is empty"
+		return result
+	}
+	if length := chat.MessageLength(request.Text); length > a.Capabilities().MaxMessageLength {
+		result.Status, result.DropReason = chat.DeliveryDropped, fmt.Sprintf("message is %d/%d characters", length, a.Capabilities().MaxMessageLength)
 		return result
 	}
 	body := struct {
@@ -152,7 +157,6 @@ func (a *Adapter) run(ctx context.Context) {
 		a.cancel = nil
 		a.setStatusLocked(chat.StateDisconnected, "disconnected", false)
 		a.mu.Unlock()
-		close(a.events)
 	}()
 	for {
 		err := a.receiveStream(ctx)
@@ -170,6 +174,9 @@ func (a *Adapter) run(ctx context.Context) {
 
 func (a *Adapter) receiveStream(ctx context.Context) error {
 	query := url.Values{"liveChatId": {a.config.LiveChatID}, "part": {"snippet,authorDetails"}}
+	if cursor := a.nextCursor(); cursor != "" {
+		query.Set("pageToken", cursor)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, a.config.APIURL+"/liveChat/messages/streamList?"+query.Encode(), nil)
 	if err != nil {
 		return err
@@ -184,25 +191,29 @@ func (a *Adapter) receiveStream(ctx context.Context) error {
 		return fmt.Errorf("YouTube live chat stream: HTTP %s", response.Status)
 	}
 	a.emit(chat.StatusEvent{Status: a.updateStatus(chat.StateConnected, "connected", false)})
-	scanner := bufio.NewScanner(response.Body)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var item youtubeItem
-		if err := json.Unmarshal([]byte(line), &item); err != nil {
+	decoder := json.NewDecoder(response.Body)
+	for {
+		var page youtubeResponse
+		if err := decoder.Decode(&page); err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.EOF
+			}
 			return err
 		}
-		if message, ok := a.normalize(item); ok {
-			a.emit(chat.MessageEvent{Message: message})
+		if page.NextPageToken != "" {
+			a.setCursor(page.NextPageToken)
+		}
+		for _, item := range page.Items {
+			if message, ok := a.normalize(item); ok {
+				a.emit(chat.MessageEvent{Message: message})
+			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return io.EOF
+}
+
+type youtubeResponse struct {
+	NextPageToken string        `json:"nextPageToken"`
+	Items         []youtubeItem `json:"items"`
 }
 
 type youtubeItem struct {
@@ -249,6 +260,19 @@ func (a *Adapter) normalize(item youtubeItem) (chat.Message, bool) {
 func (a *Adapter) headers(request *http.Request) {
 	request.Header.Set("Authorization", "Bearer "+a.config.AccessToken)
 }
+
+func (a *Adapter) nextCursor() string {
+	a.cursorMu.Lock()
+	defer a.cursorMu.Unlock()
+	return a.cursor
+}
+
+func (a *Adapter) setCursor(cursor string) {
+	a.cursorMu.Lock()
+	a.cursor = cursor
+	a.cursorMu.Unlock()
+}
+
 func (a *Adapter) emit(event chat.Event) { a.events <- event }
 func (a *Adapter) setStatusLocked(state chat.ConnectionState, detail string, retryable bool) {
 	a.status = chat.ConnectionStatus{ConnectionID: a.ConnectionID(), Platform: chat.PlatformYouTube, State: state, Detail: detail, Retryable: retryable, At: time.Now()}

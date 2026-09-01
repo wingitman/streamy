@@ -10,17 +10,21 @@ import (
 )
 
 const (
-	KeyringService       = "streamy"
-	OAuthRedirectURL     = "http://127.0.0.1:43821/oauth/callback"
-	TwitchAuthorization  = "https://id.twitch.tv/oauth2/authorize"
-	YouTubeAuthorization = "https://accounts.google.com/o/oauth2/v2/auth"
+	KeyringService         = "streamy"
+	OAuthRedirectURL       = "http://localhost:43821/oauth/callback"
+	LegacyOAuthRedirectURL = "http://127.0.0.1:43821/oauth/callback"
+	TwitchAuthorization    = "https://id.twitch.tv/oauth2/authorize"
+	YouTubeAuthorization   = "https://accounts.google.com/o/oauth2/v2/auth"
 )
 
 type ConnectionConfig struct {
-	ID       chat.ConnectionID `toml:"id"`
-	Platform chat.Platform     `toml:"platform"`
-	Channel  string            `toml:"channel"`
-	Enabled  bool              `toml:"enabled"`
+	ID            chat.ConnectionID `toml:"id"`
+	Platform      chat.Platform     `toml:"platform"`
+	Channel       string            `toml:"channel"`
+	BroadcasterID string            `toml:"broadcaster_id"`
+	UserID        string            `toml:"user_id"`
+	LiveChatID    string            `toml:"live_chat_id"`
+	Enabled       bool              `toml:"enabled"`
 }
 
 // OAuthApplication contains only values safe to keep in TOML. The client
@@ -48,11 +52,23 @@ func (c Config) Validate() error {
 		if _, ok := seen[connection.ID]; ok {
 			return fmt.Errorf("duplicate connection id %q", connection.ID)
 		}
+		if connection.Enabled {
+			switch connection.Platform {
+			case chat.PlatformTwitch:
+				if strings.TrimSpace(connection.BroadcasterID) == "" || strings.TrimSpace(connection.UserID) == "" {
+					return fmt.Errorf("enabled Twitch connection %q needs broadcaster_id and user_id", connection.ID)
+				}
+			case chat.PlatformYouTube:
+				if strings.TrimSpace(connection.LiveChatID) == "" {
+					return fmt.Errorf("enabled YouTube connection %q needs live_chat_id", connection.ID)
+				}
+			}
+		}
 		seen[connection.ID] = struct{}{}
 	}
 	for platform, application := range c.Applications {
 		if application.ClientID == "" {
-			return fmt.Errorf("%s OAuth client id is required", platform)
+			continue
 		}
 		if application.RedirectURL != OAuthRedirectURL {
 			return fmt.Errorf("%s OAuth redirect must be %q", platform, OAuthRedirectURL)
@@ -83,6 +99,7 @@ type Credential struct {
 	ClientSecret string `json:"client_secret"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
 func (c Credential) Validate() error {

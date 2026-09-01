@@ -223,6 +223,25 @@ func TestHistoryRetainsBoundedChronologicalPage(t *testing.T) {
 	}
 }
 
+func TestHistoryUsesConfiguredChatMessagePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "streamy-history.toml")
+	config := testHistoryConfig(t, 10, 1024*1024)
+	config.Path = path
+	history, err := NewHistory(config)
+	if err != nil {
+		t.Fatalf("NewHistory() error = %v", err)
+	}
+	if err := history.Append(Message{ProviderID: "message-1", Text: "hello"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := history.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("configured history path was not created: %v", err)
+	}
+}
+
 func TestHistoryRotatesAtConfiguredLogSize(t *testing.T) {
 	config := testHistoryConfig(t, 100, 700)
 	history, err := NewHistory(config)

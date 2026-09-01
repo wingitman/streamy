@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wingitman/streamy/internal/chat"
@@ -10,6 +11,7 @@ import (
 type fakeAdapter struct {
 	id        chat.ConnectionID
 	platform  chat.Platform
+	maxLength int
 	sendCalls int
 }
 
@@ -17,7 +19,9 @@ var _ chat.Adapter = (*fakeAdapter)(nil)
 
 func (a *fakeAdapter) ConnectionID() chat.ConnectionID { return a.id }
 func (a *fakeAdapter) Platform() chat.Platform         { return a.platform }
-func (a *fakeAdapter) Capabilities() chat.Capabilities { return chat.Capabilities{SendChat: true} }
+func (a *fakeAdapter) Capabilities() chat.Capabilities {
+	return chat.Capabilities{SendChat: true, MaxMessageLength: a.maxLength}
+}
 func (a *fakeAdapter) Status() chat.ConnectionStatus {
 	return chat.ConnectionStatus{ConnectionID: a.id, Platform: a.platform, State: chat.StateConnected}
 }
@@ -50,6 +54,29 @@ func TestModelFiltersByViewAndText(t *testing.T) {
 	}
 }
 
+func TestModelDeduplicatesProviderMessages(t *testing.T) {
+	model := NewModel(nil)
+	message := chat.Message{ConnectionID: "tw", ProviderID: "message-1", Text: "hello"}
+	if !model.AddMessage(chat.RenderDecision{RenderNow: true, Message: message}) {
+		t.Fatal("first provider message was rejected")
+	}
+	if model.AddMessage(chat.RenderDecision{RenderNow: true, Message: message}) {
+		t.Fatal("duplicate provider message was accepted")
+	}
+	if got := len(model.Messages()); got != 1 {
+		t.Fatalf("messages = %d, want 1", got)
+	}
+}
+
+func TestModelDoesNotAddDuplicateAdapter(t *testing.T) {
+	model := NewModel(nil)
+	model.AddAdapter(&fakeAdapter{id: "tw", platform: chat.PlatformTwitch})
+	model.AddAdapter(&fakeAdapter{id: "tw", platform: chat.PlatformTwitch})
+	if got := len(model.Targets()); got != 1 {
+		t.Fatalf("targets = %d, want 1", got)
+	}
+}
+
 func TestModelSubmitAllCreatesIndependentPendingDeliveries(t *testing.T) {
 	twitch := &fakeAdapter{id: "tw", platform: chat.PlatformTwitch}
 	youtube := &fakeAdapter{id: "yt", platform: chat.PlatformYouTube}
@@ -74,6 +101,20 @@ func TestModelSubmitAllCreatesIndependentPendingDeliveries(t *testing.T) {
 		if delivery.State != DeliverySent || delivery.Attempts != 1 {
 			t.Fatalf("delivery = %#v", delivery)
 		}
+	}
+}
+
+func TestModelSubmitRejectsMessageForStrictestSelectedTarget(t *testing.T) {
+	twitch := &fakeAdapter{id: "tw", platform: chat.PlatformTwitch, maxLength: 500}
+	youtube := &fakeAdapter{id: "yt", platform: chat.PlatformYouTube, maxLength: 200}
+	model := NewModel([]chat.Adapter{twitch, youtube})
+	model.SetComposer(strings.Repeat("界", 201))
+
+	if _, err := model.Submit(); err == nil || !strings.Contains(err.Error(), "yt: message is 201/200 characters") {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if model.Composer() == "" || len(model.Deliveries()) != 0 {
+		t.Fatal("rejected message was cleared or recorded as a delivery")
 	}
 }
 
@@ -108,5 +149,38 @@ func TestModelSuppressedPageIsSeparateFromLiveMessages(t *testing.T) {
 	}
 	if got := model.SuppressedPage(0, 10); len(got) != 1 || got[0].Text != "backlog" {
 		t.Fatalf("suppressed page = %#v", got)
+	}
+}
+
+func TestModelUpdatesAndDeletesProviderMessages(t *testing.T) {
+	model := NewModel(nil)
+	model.AddMessage(chat.RenderDecision{RenderNow: true, Message: chat.Message{
+		ConnectionID: "tw", ProviderID: "message-1", Text: "original",
+	}})
+	model.UpdateMessage(chat.MessageUpdateEvent{ProviderID: "message-1", Message: chat.Message{
+		ConnectionID: "tw", ProviderID: "message-1", Status: chat.MessageUpdated, Text: "edited",
+	}})
+	if messages := model.Messages(); len(messages) != 1 || messages[0].Text != "edited" {
+		t.Fatalf("updated messages = %#v", messages)
+	}
+	model.UpdateMessage(chat.MessageUpdateEvent{ProviderID: "message-1", Message: chat.Message{
+		ConnectionID: "tw", ProviderID: "message-1", Status: chat.MessageDeleted,
+	}})
+	if messages := model.Messages(); len(messages) != 1 || messages[0].Text != "[message deleted]" {
+		t.Fatalf("deleted messages = %#v", messages)
+	}
+}
+
+func TestModelDeliveriesAreSortedByCreationID(t *testing.T) {
+	model := NewModel([]chat.Adapter{&fakeAdapter{id: "tw", platform: chat.PlatformTwitch}})
+	for _, text := range []string{"one", "two", "three"} {
+		model.SetComposer(text)
+		if _, err := model.Submit(); err != nil {
+			t.Fatalf("Submit() error = %v", err)
+		}
+	}
+	deliveries := model.Deliveries()
+	if len(deliveries) != 3 || deliveries[0].LocalID != "local-1" || deliveries[2].LocalID != "local-3" {
+		t.Fatalf("delivery order = %#v", deliveries)
 	}
 }

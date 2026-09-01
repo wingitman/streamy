@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 )
 
 // Platform identifies the service that owns a connection or message.
@@ -41,7 +42,12 @@ type Capabilities struct {
 	FirstTimeState     bool
 	MessageUpdates     bool
 	CursorResume       bool
+	// MaxMessageLength is the provider's chat message limit in Unicode code points.
+	// Zero means that the provider does not advertise a known limit.
+	MaxMessageLength int
 }
+
+func MessageLength(text string) int { return utf8.RuneCountInString(text) }
 
 type ConnectionStatus struct {
 	ConnectionID ConnectionID

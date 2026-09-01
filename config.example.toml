@@ -1,0 +1,92 @@
+# streamy configuration
+# Leave editor empty to use VISUAL, EDITOR, or a platform default.
+editor = ""
+
+[keybinds]
+up = "k"
+down = "j"
+confirm = "enter"
+quit = "esc"
+help = "ctrl+h"
+open_config = "ctrl+o"
+theme = "ctrl+t"
+left = "h"
+right = "l"
+back = "esc"
+page_up = "pgup"
+page_down = "pgdown"
+first = "home"
+last = "end"
+copy = "ctrl+y"
+history = "ctrl+g"
+update = "ctrl+u"
+rollback = "ctrl+alt+r"
+integrations = "ctrl+i"
+filter = "ctrl+f"
+next_target = "ctrl+n"
+retry = "ctrl+r"
+reconnect = "ctrl+c"
+view_combined = "ctrl+1"
+view_twitch = "ctrl+2"
+view_youtube = "ctrl+3"
+provider_console = "ctrl+b"
+save_integration = "ctrl+s"
+toggle_enabled = "ctrl+e"
+
+[ui]
+show_hints = true
+show_logo = true
+
+[history]
+enabled = true
+file = "~/.config/delbysoft/streamy-history.jsonl"
+max_entries = 100
+
+[updates]
+disable_checks = false
+repository = "https://github.com/wingitman/streamy"
+source_path = ""
+current_commit = "dev"
+
+[applications.twitch]
+client_id = ""
+redirect_url = "http://localhost:43821/oauth/callback"
+scopes = ["user:read:chat", "user:write:chat"]
+
+[applications.youtube]
+client_id = ""
+redirect_url = "http://localhost:43821/oauth/callback"
+scopes = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+
+# Add one or more connections. Credentials are stored in the OS keyring.
+# [[connections]]
+# id = "twitch-main"
+# platform = "twitch"
+# channel = "your-channel"
+# broadcaster_id = ""
+# user_id = ""
+# enabled = true
+
+[themes]
+theme_name = "terminal"   # terminal, or a named theme from theme_file
+theme_file = "~/.config/delbysoft/themes.toml"   # shared Delbysoft theme file
+
+# Optional overrides applied after the selected theme:
+# primary = "#7C9EF0"
+# accent = "#F0A47C"
+# muted = "#666688"
+# error = "#F07C7C"
+# success = "#7CF09C"
+# file = "#B0B0CC"
+# border = "#444466"
+# selected_background = "#cd0fc1"
+# selected_foreground = "#EEEEFF"
+# header_background = "#1A1A2E"
+# hint_key = "#FFE66D"
+# parent_crumb = "#3A3A5A"
+# root_directory = "#555577"
+# clipboard = "#F0E07C"
+# brand_primary = "#FFFFFF"
+# brand_secondary = "#5865F2"
+# selector = "#FFFFFF"
+# image_background = "#1A1A2E"

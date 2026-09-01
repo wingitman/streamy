@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/wingitman/streamy/internal/chat"
@@ -82,6 +84,34 @@ func NewModel(adapters []chat.Adapter) *Model {
 	return model
 }
 
+func (m *Model) AddAdapter(adapter chat.Adapter) {
+	if m == nil || adapter == nil {
+		return
+	}
+	id := adapter.ConnectionID()
+	if _, exists := m.adapters[id]; exists {
+		return
+	}
+	m.adapters[id] = adapter
+	m.targets = append(m.targets, Target{ConnectionID: id, Platform: adapter.Platform(), Label: string(id), Status: adapter.Status()})
+}
+
+func (m *Model) RemoveAdapter(id chat.ConnectionID) {
+	if m == nil {
+		return
+	}
+	delete(m.adapters, id)
+	for i, target := range m.targets {
+		if target.ConnectionID == id {
+			m.targets = append(m.targets[:i], m.targets[i+1:]...)
+			break
+		}
+	}
+	if m.target == id {
+		m.target = AllTargets
+	}
+}
+
 func (m *Model) View() View { return m.view }
 
 func (m *Model) SetView(view View) error {
@@ -99,6 +129,18 @@ func (m *Model) SetFilter(filter string) { m.filter = strings.TrimSpace(filter) 
 func (m *Model) SetComposer(text string) { m.composer = text }
 
 func (m *Model) Composer() string { return m.composer }
+
+// MessageLimit returns the strictest limit among the currently selected targets.
+func (m *Model) MessageLimit() (int, bool) {
+	limit := 0
+	for _, adapter := range m.selectedAdapters() {
+		candidate := adapter.Capabilities().MaxMessageLength
+		if candidate > 0 && (limit == 0 || candidate < limit) {
+			limit = candidate
+		}
+	}
+	return limit, limit > 0
+}
 
 func (m *Model) Targets() []Target {
 	targets := make([]Target, len(m.targets))
@@ -120,11 +162,38 @@ func (m *Model) SelectTarget(target chat.ConnectionID) error {
 	return nil
 }
 
-func (m *Model) AddMessage(decision chat.RenderDecision) {
+func (m *Model) AddMessage(decision chat.RenderDecision) bool {
 	const maxViewMessages = 10_000
+	if decision.Message.ProviderID != "" {
+		for _, existing := range m.messages {
+			if existing.Message.ConnectionID == decision.Message.ConnectionID && existing.Message.ProviderID == decision.Message.ProviderID {
+				return false
+			}
+		}
+	}
 	m.messages = append(m.messages, decision)
 	if len(m.messages) > maxViewMessages {
 		m.messages = m.messages[len(m.messages)-maxViewMessages:]
+	}
+	return true
+}
+
+func (m *Model) UpdateMessage(update chat.MessageUpdateEvent) {
+	if update.Message.ProviderID == "" {
+		update.Message.ProviderID = update.ProviderID
+	}
+	for index := range m.messages {
+		message := m.messages[index].Message
+		if message.ConnectionID == update.Message.ConnectionID && message.ProviderID == update.ProviderID {
+			if update.Message.Status == chat.MessageDeleted {
+				update.Message.Text = "[message deleted]"
+			}
+			m.messages[index] = chat.RenderDecision{RenderNow: true, Message: update.Message}
+			return
+		}
+	}
+	if update.Message.Status != chat.MessageDeleted {
+		m.AddMessage(chat.RenderDecision{RenderNow: true, Message: update.Message})
 	}
 }
 
@@ -170,6 +239,13 @@ func (m *Model) Submit() ([]SendCommand, error) {
 	targets := m.selectedAdapters()
 	if len(targets) == 0 {
 		return nil, errors.New("selected target is unavailable")
+	}
+	length := chat.MessageLength(text)
+	for _, adapter := range targets {
+		limit := adapter.Capabilities().MaxMessageLength
+		if limit > 0 && length > limit {
+			return nil, fmt.Errorf("%s: message is %d/%d characters", adapter.ConnectionID(), length, limit)
+		}
 	}
 
 	m.nextID++
@@ -228,7 +304,32 @@ func (m *Model) Deliveries() []Delivery {
 	for _, delivery := range m.deliveries {
 		deliveries = append(deliveries, delivery)
 	}
+	sort.Slice(deliveries, func(i, j int) bool {
+		return deliveryNumber(deliveries[i].LocalID) < deliveryNumber(deliveries[j].LocalID)
+	})
 	return deliveries
+}
+
+func (m *Model) LatestRetryable() (SendCommand, error) {
+	var latest Delivery
+	found := false
+	for _, delivery := range m.deliveries {
+		if delivery.State != DeliveryFailed || !delivery.Result.Retryable {
+			continue
+		}
+		if !found || deliveryNumber(delivery.LocalID) > deliveryNumber(latest.LocalID) {
+			latest, found = delivery, true
+		}
+	}
+	if !found {
+		return SendCommand{}, errors.New("no retryable delivery")
+	}
+	return m.Retry(latest.LocalID, latest.ConnectionID)
+}
+
+func deliveryNumber(localID string) int64 {
+	number, _ := strconv.ParseInt(strings.TrimPrefix(localID, "local-"), 10, 64)
+	return number
 }
 
 func (m *Model) Execute(ctx context.Context, command SendCommand) chat.SendResult {

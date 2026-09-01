@@ -1,0 +1,27 @@
+# Copy this file to ~/.config/delbysoft/streamy.toml and edit the values.
+# Keep client secrets and OAuth tokens in the OS keyring, never in this file.
+
+[applications.twitch]
+client_id = "your-twitch-client-id"
+redirect_url = "http://127.0.0.1:43821/oauth/callback"
+scopes = ["user:read:chat", "user:write:chat"]
+
+[applications.youtube]
+client_id = "your-google-client-id"
+redirect_url = "http://127.0.0.1:43821/oauth/callback"
+scopes = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+
+[[connections]]
+id = "twitch-main"
+platform = "twitch"
+channel = "your-channel"
+broadcaster_id = "your-broadcaster-id"
+user_id = "your-user-id"
+enabled = false
+
+[[connections]]
+id = "youtube-main"
+platform = "youtube"
+channel = "your-channel"
+live_chat_id = "your-live-chat-id"
+enabled = false

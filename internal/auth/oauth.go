@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wingitman/streamy/internal/chat"
+	"golang.org/x/oauth2"
 )
 
 type OAuthEndpoints struct {
@@ -139,6 +140,45 @@ func (f *OAuthFlow) Authorize(ctx context.Context) (Credential, error) {
 	}
 }
 
+// Refresh exchanges a stored refresh token without opening a browser. The
+// returned credential keeps the old refresh token when the provider omits it.
+func (f *OAuthFlow) Refresh(ctx context.Context, credential Credential) (Credential, error) {
+	if f.Client == nil {
+		f.Client = http.DefaultClient
+	}
+	if credential.RefreshToken == "" || f.ClientID == "" || f.ClientSecret == "" || f.Endpoints.TokenURL == "" {
+		return Credential{}, errors.New("OAuth refresh has invalid client or refresh-token settings")
+	}
+	clientConfig := oauth2.Config{
+		ClientID:     f.ClientID,
+		ClientSecret: f.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  f.Endpoints.AuthorizationURL,
+			TokenURL: f.Endpoints.TokenURL,
+		},
+		Scopes:      f.Scopes,
+		RedirectURL: f.CallbackURL,
+	}
+	token := &oauth2.Token{AccessToken: credential.AccessToken, RefreshToken: credential.RefreshToken, Expiry: time.Unix(1, 0)}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, f.Client)
+	refreshed, err := clientConfig.TokenSource(ctx, token).Token()
+	if err != nil {
+		return Credential{}, fmt.Errorf("refresh OAuth token: %w", err)
+	}
+	if refreshed.AccessToken == "" {
+		return Credential{}, errors.New("OAuth refresh response has no access token")
+	}
+	refreshToken := refreshed.RefreshToken
+	if refreshToken == "" {
+		refreshToken = credential.RefreshToken
+	}
+	expiresAt := int64(0)
+	if !refreshed.Expiry.IsZero() {
+		expiresAt = refreshed.Expiry.Unix()
+	}
+	return Credential{ClientID: f.ClientID, ClientSecret: f.ClientSecret, AccessToken: refreshed.AccessToken, RefreshToken: refreshToken, ExpiresAt: expiresAt}, nil
+}
+
 func (f *OAuthFlow) authorizationURL(state, challenge string) string {
 	query := url.Values{
 		"client_id":             {f.ClientID},
@@ -178,6 +218,7 @@ func (f *OAuthFlow) exchange(ctx context.Context, code, verifier string) (Creden
 	var token struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&token); err != nil {
 		return Credential{}, fmt.Errorf("decode OAuth token: %w", err)
@@ -185,7 +226,15 @@ func (f *OAuthFlow) exchange(ctx context.Context, code, verifier string) (Creden
 	if token.AccessToken == "" {
 		return Credential{}, errors.New("OAuth token response has no access token")
 	}
-	return Credential{ClientID: f.ClientID, ClientSecret: f.ClientSecret, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken}, nil
+	expiresAt := int64(0)
+	if token.ExpiresIn > 0 {
+		now := time.Now()
+		if f.Now != nil {
+			now = f.Now()
+		}
+		expiresAt = now.Add(time.Duration(token.ExpiresIn) * time.Second).Unix()
+	}
+	return Credential{ClientID: f.ClientID, ClientSecret: f.ClientSecret, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: expiresAt}, nil
 }
 
 func randomString(reader io.Reader, size int) (string, error) {

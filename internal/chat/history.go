@@ -19,6 +19,7 @@ const (
 
 type HistoryConfig struct {
 	Directory           string
+	Path                string
 	SessionID           string
 	ConnectionID        ConnectionID
 	Platform            Platform
@@ -90,6 +91,9 @@ func NewHistory(config HistoryConfig) (*History, error) {
 		return nil, fmt.Errorf("create history directory: %w", err)
 	}
 	path := filepath.Join(config.Directory, historyFilename(config))
+	if config.Path != "" {
+		path = config.Path
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open history log: %w", err)
@@ -253,6 +257,9 @@ func (h *History) rotateLocked() error {
 		return fmt.Errorf("close history log for rotation: %w", err)
 	}
 	path := filepath.Join(h.config.Directory, historyFilename(h.config))
+	if h.config.Path != "" {
+		path = h.config.Path
+	}
 	rotated := path + ".1"
 	if err := os.Remove(rotated); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove rotated history log: %w", err)
@@ -270,6 +277,9 @@ func (h *History) rotateLocked() error {
 }
 
 func historyFilename(config HistoryConfig) string {
+	if config.Path != "" {
+		return config.Path
+	}
 	return strings.Join([]string{
 		safeHistoryPart(config.SessionID),
 		safeHistoryPart(string(config.Platform)),

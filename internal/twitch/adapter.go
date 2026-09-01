@@ -74,7 +74,7 @@ func (a *Adapter) Capabilities() chat.Capabilities {
 	return chat.Capabilities{
 		ReceiveChat: true, SendChat: true, MessageBadges: true, MessageEmotes: true,
 		PaidMessages: true, MembershipMessages: false, FollowerState: false, FirstTimeState: false,
-		CursorResume: false,
+		CursorResume: false, MaxMessageLength: 500,
 	}
 }
 func (a *Adapter) Status() chat.ConnectionStatus {
@@ -126,6 +126,10 @@ func (a *Adapter) Send(ctx context.Context, request chat.SendRequest) chat.SendR
 	result := chat.SendResult{LocalID: request.LocalID, ConnectionID: a.ConnectionID(), Platform: a.Platform()}
 	if strings.TrimSpace(request.Text) == "" {
 		result.Status, result.ProviderError = chat.DeliveryFailed, "message is empty"
+		return result
+	}
+	if length := chat.MessageLength(request.Text); length > a.Capabilities().MaxMessageLength {
+		result.Status, result.DropReason = chat.DeliveryDropped, fmt.Sprintf("message is %d/%d characters", length, a.Capabilities().MaxMessageLength)
 		return result
 	}
 	body := struct {
@@ -190,7 +194,6 @@ func (a *Adapter) run(ctx context.Context) {
 		a.cancel = nil
 		a.setStatusLocked(chat.StateDisconnected, "disconnected", false)
 		a.mu.Unlock()
-		close(a.events)
 	}()
 	for {
 		err := a.receiveSession(ctx)
