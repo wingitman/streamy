@@ -59,9 +59,7 @@ func (c Config) Validate() error {
 					return fmt.Errorf("enabled Twitch connection %q needs broadcaster_id and user_id", connection.ID)
 				}
 			case chat.PlatformYouTube:
-				if strings.TrimSpace(connection.LiveChatID) == "" {
-					return fmt.Errorf("enabled YouTube connection %q needs live_chat_id", connection.ID)
-				}
+				// The active broadcast's chat ID can be discovered after OAuth.
 			}
 		}
 		seen[connection.ID] = struct{}{}

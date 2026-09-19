@@ -279,6 +279,33 @@ func TestUnconfiguredOpenConfigKeyIsTyped(t *testing.T) {
 	}
 }
 
+func TestIntegrationsKeyOpensIntegrationsFromMessageView(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(tea.KeyPressMsg{Text: "i", Code: 'i', Mod: tea.ModCtrl})
+	if got := updated.(Model).current; got != modeIntegrations {
+		t.Fatalf("current mode after Ctrl+i = %v, want integrations", got)
+	}
+}
+
+func TestYouTubeSetupIncludesLiveChatID(t *testing.T) {
+	model, err := New("streamy", config.Default(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.current = modeIntegrationSetup
+	model.setupPlatform = chat.PlatformYouTube
+	model.setupValues[0] = "youtube-main"
+	model.setupValues[4] = "live-chat-123"
+	model.width, model.height = 120, 40
+	view := model.View().Content
+	if !strings.Contains(view, "Live chat ID: live-chat-123") {
+		t.Fatalf("YouTube setup omitted live chat ID: %q", view)
+	}
+}
+
 func TestRetainedSecretIsReplacedOnFirstEdit(t *testing.T) {
 	model, err := New("streamy", config.Default(), nil, nil)
 	if err != nil {

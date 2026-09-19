@@ -26,6 +26,74 @@ type Config struct {
 	HTTPClient   *http.Client
 }
 
+type Broadcast struct {
+	ID          string
+	Title       string
+	LiveChatID  string
+	ActualStart time.Time
+}
+
+// ListActiveBroadcasts returns the authenticated channel's active broadcasts
+// and their associated chat IDs.
+func ListActiveBroadcasts(ctx context.Context, accessToken, apiURL string, client *http.Client) ([]Broadcast, error) {
+	if accessToken == "" {
+		return nil, errors.New("YouTube access token is required to discover live chats")
+	}
+	if apiURL == "" {
+		apiURL = defaultAPIURL
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	endpoint, err := url.Parse(strings.TrimRight(apiURL, "/") + "/liveBroadcasts")
+	if err != nil {
+		return nil, fmt.Errorf("build YouTube broadcast request: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("part", "snippet,status")
+	query.Set("broadcastStatus", "active")
+	query.Set("broadcastType", "all")
+	query.Set("mine", "true")
+	query.Set("maxResults", "50")
+	endpoint.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build YouTube broadcast request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("list YouTube broadcasts: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("list YouTube broadcasts: HTTP %s", response.Status)
+	}
+	var payload struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Snippet struct {
+				Title         string    `json:"title"`
+				LiveChatID    string    `json:"liveChatId"`
+				ActualStartAt time.Time `json:"actualStartTime"`
+			} `json:"snippet"`
+			Status struct {
+				LifeCycleStatus string `json:"lifeCycleStatus"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode YouTube broadcasts: %w", err)
+	}
+	broadcasts := make([]Broadcast, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		if item.ID != "" && item.Snippet.LiveChatID != "" && item.Status.LifeCycleStatus == "live" {
+			broadcasts = append(broadcasts, Broadcast{ID: item.ID, Title: item.Snippet.Title, LiveChatID: item.Snippet.LiveChatID, ActualStart: item.Snippet.ActualStartAt})
+		}
+	}
+	return broadcasts, nil
+}
+
 type Adapter struct {
 	config   Config
 	client   *http.Client

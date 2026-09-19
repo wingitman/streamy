@@ -44,6 +44,27 @@ func TestNormalizeSuperChatAndMembership(t *testing.T) {
 	}
 }
 
+func TestListActiveBroadcastsReturnsLiveChatIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("mine") != "true" || request.URL.Query().Get("broadcastStatus") != "active" {
+			t.Fatalf("query = %s", request.URL.RawQuery)
+		}
+		if request.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
+		}
+		_, _ = io.WriteString(writer, `{"items":[{"id":"video-1","snippet":{"title":"Tonight's stream","liveChatId":"chat-1","actualStartTime":"2026-09-02T12:00:00Z"},"status":{"lifeCycleStatus":"live"}}]}`)
+	}))
+	defer server.Close()
+
+	broadcasts, err := ListActiveBroadcasts(context.Background(), "token", server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("ListActiveBroadcasts() error = %v", err)
+	}
+	if len(broadcasts) != 1 || broadcasts[0].LiveChatID != "chat-1" || broadcasts[0].Title != "Tonight's stream" {
+		t.Fatalf("broadcasts = %#v", broadcasts)
+	}
+}
+
 func TestSendLiveChatMessageUsesOAuthBearer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/liveChat/messages" || request.Header.Get("Authorization") != "Bearer token" {

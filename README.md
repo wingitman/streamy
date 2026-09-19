@@ -22,15 +22,35 @@ The TOML file contains connection identifiers and OAuth application IDs only.
 Access tokens and client secrets are stored in the OS keyring under the
 `streamy` service.
 
-For a new connection, the guided setup:
+For a new connection, open integrations with `Ctrl+i` and choose a provider. The
+guided setup stores client secrets in the OS keyring, not in TOML.
 
-1. Press `i`, choose a provider, and press `b` to open its developer console.
-2. Register `http://localhost:43821/oauth/callback` when the provider asks for a
-   redirect URI.
-3. Enter the connection ID, channel, client ID, and client secret in Streamy.
-4. Restart Streamy and run `streamy --login <platform> --connection <id>` to
-   authorize it. The connection is initially disabled so you can add the
-   provider-specific identifiers before enabling it.
+For YouTube, complete these steps:
+
+1. In Google Cloud Console, select or create a project.
+2. Enable **YouTube Data API v3** for that project.
+3. Configure the OAuth consent screen and add your Google account as a test user
+   if the app is still in testing.
+4. Create an OAuth client and use the application type supported by Google for
+   this local application. Register `http://localhost:43821/oauth/callback` if
+   Google asks for an authorized redirect URI.
+5. In Streamy's YouTube setup, enter a connection ID, a channel label, the
+   client ID, and the client secret. Leave **live chat ID** blank to discover
+   the active broadcast automatically. If multiple broadcasts are active, enter
+   the desired chat ID manually.
+7. Save the connection, then authorize it:
+   `streamy --login youtube --connection <connection-id>`
+8. Enable the connection after its live chat ID is present, then restart Streamy
+   if it does not connect immediately.
+
+The live chat ID identifies the chat attached to an active live broadcast; the
+channel name alone is not sufficient. Streamy discovers it with
+`liveBroadcasts.list` and reads `snippet.liveChatId`.
+
+For Twitch, press the provider-console key, register the callback URL above, and
+enter the connection and application values shown by the setup screen. The
+connection initially remains disabled so provider-specific identifiers can be
+added before enabling it.
 
 The first launch with no configured connections is safe and opens an empty chat
 view. Press `i` to configure an integration instead of editing TOML manually.

@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/wingitman/streamy/internal/chat"
@@ -48,9 +47,9 @@ func TestConfigValidationRejectsDuplicateConnectionsAndSecretsInConfig(t *testin
 	}
 }
 
-func TestConfigValidationRequiresProviderIdentifiersForEnabledConnections(t *testing.T) {
+func TestConfigValidationAllowsYouTubeLiveChatDiscovery(t *testing.T) {
 	config := Config{Connections: []ConnectionConfig{{ID: "main", Platform: chat.PlatformYouTube, Channel: "streamer", Enabled: true}}}
-	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "live_chat_id") {
+	if err := config.Validate(); err != nil {
 		t.Fatalf("validation error = %v", err)
 	}
 }

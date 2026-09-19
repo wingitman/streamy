@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wingitman/streamy/internal/app"
@@ -20,8 +21,34 @@ import (
 
 func integrationConnector(configPath string) app.IntegrationConnector {
 	return func(ctx context.Context, cfg config.Config, connection auth.ConnectionConfig, credential auth.Credential) (chat.Adapter, *chat.History, error) {
+		if connection.Platform == chat.PlatformYouTube {
+			if connection.LiveChatID == "" {
+				liveChatID, err := resolveYouTubeLiveChatID(ctx, credential.AccessToken)
+				if err != nil {
+					return nil, nil, err
+				}
+				connection.LiveChatID = liveChatID
+			}
+			connection.Enabled = true
+			if err := config.SaveIntegration("streamy", connection.Platform, connection, cfg.Applications[connection.Platform].ClientID); err != nil {
+				return nil, nil, fmt.Errorf("save resolved connection metadata: %w", err)
+			}
+			clientID := credential.ClientID
+			if clientID == "" {
+				clientID = cfg.Applications[connection.Platform].ClientID
+			}
+			adapter, err := youtube.New(youtube.Config{ConnectionID: connection.ID, LiveChatID: connection.LiveChatID, ClientID: clientID, AccessToken: credential.AccessToken})
+			if err != nil {
+				return nil, nil, err
+			}
+			history, err := newIntegrationHistory(cfg, configPath, connection)
+			if err != nil {
+				return nil, nil, err
+			}
+			return adapter, history, nil
+		}
 		if connection.Platform != chat.PlatformTwitch {
-			return nil, nil, fmt.Errorf("automatic %s connection requires live_chat_id", connection.Platform)
+			return nil, nil, fmt.Errorf("unsupported integration platform %s", connection.Platform)
 		}
 		broadcasterID, userID, err := resolveTwitchIDs(ctx, credential.ClientID, credential.AccessToken, connection.Channel)
 		if err != nil {
@@ -173,7 +200,16 @@ func buildAdapters(cfg config.Config) ([]chat.Adapter, []string) {
 			}
 			adapters = append(adapters, adapter)
 		case chat.PlatformYouTube:
-			adapter, err := youtube.New(youtube.Config{ConnectionID: connection.ID, LiveChatID: connection.LiveChatID, ClientID: clientID, AccessToken: credential.AccessToken})
+			liveChatID := connection.LiveChatID
+			if liveChatID == "" {
+				var resolveErr error
+				liveChatID, resolveErr = resolveYouTubeLiveChatID(context.Background(), credential.AccessToken)
+				if resolveErr != nil {
+					warnings = append(warnings, fmt.Sprintf("%s unavailable: %v", connection.ID, resolveErr))
+					continue
+				}
+			}
+			adapter, err := youtube.New(youtube.Config{ConnectionID: connection.ID, LiveChatID: liveChatID, ClientID: clientID, AccessToken: credential.AccessToken})
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("%s unavailable: %v", connection.ID, err))
 				continue
@@ -182,6 +218,37 @@ func buildAdapters(cfg config.Config) ([]chat.Adapter, []string) {
 		}
 	}
 	return adapters, warnings
+}
+
+func resolveYouTubeLiveChatID(ctx context.Context, accessToken string) (string, error) {
+	broadcasts, err := youtube.ListActiveBroadcasts(ctx, accessToken, "", http.DefaultClient)
+	if err != nil {
+		return "", err
+	}
+	if len(broadcasts) == 0 {
+		return "", fmt.Errorf("no active YouTube broadcast with a live chat was found")
+	}
+	if len(broadcasts) > 1 {
+		titles := make([]string, len(broadcasts))
+		for i, broadcast := range broadcasts {
+			titles[i] = broadcast.Title
+		}
+		return "", fmt.Errorf("multiple active YouTube broadcasts found; enter a live chat ID manually (%s)", strings.Join(titles, ", "))
+	}
+	return broadcasts[0].LiveChatID, nil
+}
+
+func newIntegrationHistory(cfg config.Config, configPath string, connection auth.ConnectionConfig) (*chat.History, error) {
+	settings := chat.DefaultHistoryConfig()
+	settings.Directory = filepath.Join(filepath.Dir(configPath), "history")
+	settings.Path = cfg.History.File
+	if cfg.History.MaxEntries > 0 {
+		settings.MaxMessages = cfg.History.MaxEntries
+	}
+	settings.SessionID = "default"
+	settings.ConnectionID = connection.ID
+	settings.Platform = connection.Platform
+	return chat.NewHistory(settings)
 }
 
 func openHistories(cfg config.Config, configPath string, adapters []chat.Adapter) (map[chat.ConnectionID]*chat.History, error) {

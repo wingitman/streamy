@@ -36,7 +36,6 @@ func trustedURL(value string) bool {
 	for _, prefix := range []string{
 		"https://delbysoft.com",
 		"https://dev.twitch.tv/console/apps",
-		"https://console.cloud.google.com/apis/credentials",
 		"https://console.cloud.google.com/apis/library/youtube.googleapis.com",
 	} {
 		if strings.HasPrefix(value, prefix) {

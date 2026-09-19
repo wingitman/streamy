@@ -61,7 +61,7 @@ type Model struct {
 	integrationCursor int
 	setupPlatform     chat.Platform
 	setupField        int
-	setupValues       [4]string
+	setupValues       [5]string
 	setupClientIDKept bool
 	setupSecretKept   bool
 	setupEnabled      bool
@@ -317,7 +317,7 @@ func (m Model) isConfiguredKey(key string) bool {
 		m.cfg.Keybinds.Copy, m.cfg.Keybinds.Filter, m.cfg.Keybinds.NextTarget, m.cfg.Keybinds.Retry,
 		m.cfg.Keybinds.Reconnect, m.cfg.Keybinds.ViewCombined, m.cfg.Keybinds.ViewTwitch,
 		m.cfg.Keybinds.ViewYouTube, m.cfg.Keybinds.History, m.cfg.Keybinds.Update, m.cfg.Keybinds.Rollback,
-		m.cfg.Keybinds.Confirm, m.cfg.Keybinds.ProviderConsole, m.cfg.Keybinds.SaveIntegration,
+		m.cfg.Keybinds.Confirm, m.cfg.Keybinds.Integrations, m.cfg.Keybinds.ProviderConsole, m.cfg.Keybinds.SaveIntegration,
 		m.cfg.Keybinds.ToggleEnabled,
 	} {
 		if matches(key, configured) {
@@ -657,7 +657,7 @@ func (m Model) integrationKey(key string) (tea.Model, tea.Cmd) {
 		return m, platform.OpenURL(integrationURL(m.integrationCursor))
 	case matches(key, m.cfg.Keybinds.Confirm) && m.integrationCursor < 2:
 		m.setupPlatform = []chat.Platform{chat.PlatformTwitch, chat.PlatformYouTube}[m.integrationCursor]
-		m.setupField, m.setupValues = 0, [4]string{}
+		m.setupField, m.setupValues = 0, [5]string{}
 		m.setupValues[0] = nextConnectionID(m.cfg, m.setupPlatform)
 		for _, connection := range m.cfg.Connections {
 			if connection.Platform == m.setupPlatform {
@@ -672,6 +672,14 @@ func (m Model) integrationKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.setupValues[2] = m.cfg.Applications[m.setupPlatform].ClientID
 		m.setupClientIDKept = m.setupValues[2] != ""
+		if m.setupPlatform == chat.PlatformYouTube {
+			for _, connection := range m.cfg.Connections {
+				if connection.ID == chat.ConnectionID(m.setupValues[0]) {
+					m.setupValues[4] = connection.LiveChatID
+					break
+				}
+			}
+		}
 		m.setupSecretKept = false
 		if credential, err := auth.NewCredentialStore(auth.OSKeyring{}).Load(m.setupPlatform, chat.ConnectionID(m.setupValues[0])); err == nil {
 			m.setupValues[3] = credential.ClientSecret
@@ -737,7 +745,7 @@ func (m Model) integrationSetupKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if matches(key, m.cfg.Keybinds.Confirm) {
-		if m.setupField == len(m.setupValues) {
+		if m.setupField == m.setupFieldCount() {
 			return m, m.saveIntegration()
 		}
 		m.setupEditing = true
@@ -753,7 +761,7 @@ func (m Model) integrationSetupKey(key string) (tea.Model, tea.Cmd) {
 		return m, platform.OpenURL(integrationURL(cursor))
 	}
 	if matches(key, m.cfg.Keybinds.Down) || matches(key, m.cfg.Keybinds.NextTarget) {
-		m.setupField = min(len(m.setupValues), m.setupField+1)
+		m.setupField = min(m.setupFieldCount(), m.setupField+1)
 	} else if matches(key, m.cfg.Keybinds.Up) {
 		m.setupField = max(0, m.setupField-1)
 	}
@@ -776,7 +784,11 @@ func (m *Model) pasteSetupValue(content string) {
 func (m Model) saveIntegration() tea.Cmd {
 	platformName, values := m.setupPlatform, m.setupValues
 	return func() tea.Msg {
-		connection := auth.ConnectionConfig{ID: chat.ConnectionID(values[0]), Platform: platformName, Channel: values[1], Enabled: m.setupEnabled}
+		liveChatID := ""
+		if platformName == chat.PlatformYouTube {
+			liveChatID = values[4]
+		}
+		connection := auth.ConnectionConfig{ID: chat.ConnectionID(values[0]), Platform: platformName, Channel: values[1], LiveChatID: liveChatID, Enabled: m.setupEnabled}
 		store := auth.NewCredentialStore(auth.OSKeyring{})
 		credential := auth.Credential{ClientID: values[2], ClientSecret: values[3]}
 		if existing, err := store.Load(platformName, connection.ID); err == nil {
@@ -837,11 +849,18 @@ func (m Model) saveIntegration() tea.Cmd {
 	}
 }
 
+func (m Model) setupFieldCount() int {
+	if m.setupPlatform == chat.PlatformYouTube {
+		return len(m.setupValues)
+	}
+	return len(m.setupValues) - 1
+}
+
 func integrationURL(cursor int) string {
 	if cursor == 0 {
 		return "https://dev.twitch.tv/console/apps"
 	}
-	return "https://console.cloud.google.com/apis/credentials"
+	return "https://console.cloud.google.com/apis/library/youtube.googleapis.com"
 }
 
 func nextConnectionID(cfg config.Config, platformName chat.Platform) string {
@@ -1081,11 +1100,18 @@ func (m Model) View() tea.View {
 	}
 	if m.current == modeIntegrationSetup {
 		labels := []string{"Connection ID", "Channel name", "Client ID", "Client secret"}
-		lines := []string{"Provider: " + string(m.setupPlatform), "Enter starts/stops editing; Tab advances; Esc cancels.", ""}
+		lines := []string{"Provider: " + string(m.setupPlatform), "Enter edits; " + m.cfg.Keybinds.NextTarget + " advances; " + m.cfg.Keybinds.Back + " cancels.", ""}
 		if m.setupPlatform == chat.PlatformTwitch {
-			lines = append(lines, "Twitch: press "+m.cfg.Keybinds.ProviderConsole+" to open the developer console and register the callback.")
+			lines = append(lines, "Twitch setup: open the developer console, create an app, and register the callback URL below.")
 		} else {
-			lines = append(lines, "YouTube: press "+m.cfg.Keybinds.ProviderConsole+" to open Google Cloud; enable YouTube Data API v3.")
+			labels = append(labels, "Live chat ID")
+			lines = append(lines,
+				"YouTube setup, in Google Cloud:",
+				"1. Select or create a project, then enable YouTube Data API v3.",
+				"2. Configure OAuth consent, add yourself as a test user if asked, then create an OAuth client.",
+				"3. Choose Desktop app if offered; otherwise use a Web app and add the callback URL below.",
+				"4. Paste the client ID and secret here. The secret is stored in your OS keyring.",
+				"5. Leave Live chat ID blank to discover the active broadcast automatically, or enter one manually.")
 		}
 		for i, label := range labels {
 			value := m.setupValues[i]
@@ -1105,14 +1131,18 @@ func (m Model) View() tea.View {
 			lines = append(lines, prefix+label+": "+value+" "+state)
 		}
 		savePrefix := "  "
-		if m.setupField == len(m.setupValues) {
+		if m.setupField == m.setupFieldCount() {
 			savePrefix = "> "
 		}
 		enabledState := "disabled"
 		if m.setupEnabled {
 			enabledState = "enabled"
 		}
-		lines = append(lines, "Connection: "+enabledState+" ["+m.cfg.Keybinds.ToggleEnabled+" toggle]", savePrefix+"Save integration ["+m.cfg.Keybinds.SaveIntegration+"]", "", "Connection ID: a local name, such as twitch-main.", "Client ID: the public identifier from the provider console.", "Client secret: the private value paired with the client ID; never share it.", "", "The callback URL is "+auth.OAuthRedirectURL, m.cfg.Keybinds.Confirm+" starts/stops editing; "+m.cfg.Keybinds.NextTarget+" advances; "+m.cfg.Keybinds.SaveIntegration+" saves; "+m.cfg.Keybinds.ProviderConsole+" opens the provider console.")
+		lines = append(lines, "Connection: "+enabledState+" ["+m.cfg.Keybinds.ToggleEnabled+" toggle]", savePrefix+"Save integration ["+m.cfg.Keybinds.SaveIntegration+"]", "", "Connection ID: a local name, such as youtube-main.", "Channel name: a label for this connection; it does not find the live chat.", "Client ID: the public identifier from Google Cloud.", "Client secret: the private value paired with the client ID; never share it.")
+		if m.setupPlatform == chat.PlatformYouTube {
+			lines = append(lines, "Live chat ID: optional; Streamy discovers one active chat after OAuth.", "If multiple broadcasts are active, enter the desired chat ID manually.", "After saving, run: streamy --login youtube --connection "+m.setupValues[0])
+		}
+		lines = append(lines, "", "The callback URL is "+auth.OAuthRedirectURL, m.cfg.Keybinds.Confirm+" edits; "+m.cfg.Keybinds.NextTarget+" advances; "+m.cfg.Keybinds.SaveIntegration+" saves; "+m.cfg.Keybinds.ProviderConsole+" opens Google Cloud or the provider console.")
 		return m.newView(m.overlay("Set Up Integration", lines))
 	}
 	lines := []string{m.header(), ""}

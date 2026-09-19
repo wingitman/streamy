@@ -706,6 +706,7 @@ func buildApplicationsSection(cfg Config) string {
 		"# channel = \"your-channel\"\n" +
 		"# broadcaster_id = \"\"\n" +
 		"# user_id = \"\"\n" +
+		"# live_chat_id = \"\"  # YouTube only: the active stream's live chat ID\n" +
 		"# enabled = true\n\n"
 }
 

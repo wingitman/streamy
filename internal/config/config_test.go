@@ -73,6 +73,24 @@ func TestSaveIntegrationWritesProviderAndConnection(t *testing.T) {
 	}
 }
 
+func TestSaveIntegrationWritesYouTubeLiveChatID(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	err := SaveIntegration("streamy", chat.PlatformYouTube, auth.ConnectionConfig{
+		ID: "youtube-main", Platform: chat.PlatformYouTube, Channel: "channel",
+		LiveChatID: "live-chat-123",
+	}, "client-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load("streamy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Connections) != 1 || cfg.Connections[0].LiveChatID != "live-chat-123" {
+		t.Fatalf("saved YouTube live chat ID = %#v", cfg.Connections)
+	}
+}
+
 func TestLoadPreservesStreamyProviderConfiguration(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
